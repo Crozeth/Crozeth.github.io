@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BANYUHAY 2025 | Offline QR Verifier</title>
+  <link rel="manifest" href="manifest.json" />
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f6f9;
+      text-align: center;
+      margin: 0;
+      padding: 20px;
+    }
+    h2 { color:#00205B; }
+    #reader { width:320px; margin:20px auto; }
+    #status { margin-top:20px; font-weight:bold; padding:10px; border-radius:10px; display:inline-block; min-width:200px; }
+    .ok { color:green; background:#e6f4ea; }
+    .err { color:red; background:#fdecea; }
+    .warn { color:#b36b00; background:#fff4e5; }
+    #log { margin-top:30px; max-width:650px; margin:auto; text-align:left; background:white; border-radius:8px; padding:10px; height:250px; overflow-y:auto; border:1px solid #ccc; }
+    button,input[type=file] {
+      margin-top:10px; padding:8px 12px; border-radius:6px; border:1px solid #ccc;
+      font-size:14px;
+    }
+    button { background:#00205B; color:white; cursor:pointer; }
+    button:hover { background:#003580; }
+    a { color:#00205B; text-decoration:underline; }
+  </style>
+</head>
+<body>
+  <h2>🎟️ BANYUHAY 2025 Offline Check-In</h2>
+  <p>Load your <strong>QR_Log.csv</strong> then scan attendee codes for verification.</p>
+
+  <!-- Tip for users if file picker doesn’t open -->
+  <p style="font-size:13px;color:#555;">
+    📁 If the file picker doesn’t open, try 
+    <a href="index.html">opening this page in your browser</a> 
+    instead of the installed app.
+  </p>
+
+  <!-- Hidden file input + custom upload button -->
+  <input type="file" id="csvFile" accept=".csv" style="display:none;">
+  <button id="uploadBtn">📁 Upload QR Log</button><br>
+  <button id="exportBtn" disabled>⬇ Download Check-In Log</button>
+
+  <div id="reader"></div>
+  <div id="status"></div>
+  <div id="log"></div>
+
+  <script>
+    // Register the offline cache service worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js');
+    }
+
+    let qrData = [], checkInLog = [], scanner;
+
+    // Fix: manual trigger for file picker
+    document.getElementById('uploadBtn').addEventListener('click', () => {
+      document.getElementById('csvFile').click();
+    });
+
+    // Handle file upload
+    document.getElementById('csvFile').addEventListener('change', e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = ev => parseCSV(ev.target.result);
+      r.readAsText(f);
+    });
+
+    // Parse QR Log CSV
+    function parseCSV(text) {
+      const lines = text.split('\n').filter(l => l.trim() !== "");
+      qrData = lines.slice(1).map(l => {
+        const c = l.split(',');
+        return {
+          timestamp: c[0]?.trim(),
+          mainRegistrant: c[1]?.trim(),
+          memberEmail: c[2]?.trim(),
+          package: c[3]?.trim(),
+          qrUrl: c[4]?.trim()
+        };
+      });
+      const s = document.getElementById('status');
+      s.innerHTML = "✅ QR Log loaded successfully.";
+      s.className = "ok";
+      startScanner();
+      document.getElementById("exportBtn").disabled = false;
+    }
+
+    // Start camera scanner
+    function startScanner() {
+      if (scanner) scanner.stop();
+      scanner = new Html5Qrcode("reader");
+      scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: 250 },
+        onScan
+      ).catch(() => {
+        const s = document.getElementById('status');
+        s.innerHTML = "⚠️ Camera blocked. Install app or use HTTPS.";
+        s.className = "warn";
+      });
+    }
+
+    // Handle scan results
+    function onScan(decodedText) {
+      const now = new Date().toLocaleString();
+      const match = qrData.find(r => 
+        decodedText.includes(r.memberEmail) || 
+        decodedText.includes(r.mainRegistrant)
+      );
+      const s = document.getElementById('status');
+      const log = document.getElementById('log');
+
+      if (match) {
+        const already = checkInLog.some(e => e.memberEmail === match.memberEmail);
+        if (already) {
+          s.innerHTML = `⚠️ Already checked in: ${match.memberEmail}`;
+          s.className = "warn";
+        } else {
+          s.innerHTML = `✅ VALID — ${match.memberEmail}<br>(${match.package})`;
+          s.className = "ok";
+          checkInLog.push({
+            time: now,
+            mainRegistrant: match.mainRegistrant,
+            memberEmail: match.memberEmail,
+            package: match.package
+          });
+          saveToStorage(); // Save progress
+        }
+      } else {
+        s.innerHTML = "❌ INVALID QR";
+        s.className = "err";
+      }
+
+      log.innerHTML += `<div class="${s.className}">${now} — ${s.innerHTML.replace(/<[^>]*>/g,'')}</div>`;
+      log.scrollTop = log.scrollHeight;
+    }
+
+    // Persistent local storage
+    function saveToStorage() {
+      localStorage.setItem("banyuhayCheckIns", JSON.stringify(checkInLog));
+    }
+
+    function loadFromStorage() {
+      const saved = localStorage.getItem("banyuhayCheckIns");
+      if (saved) checkInLog = JSON.parse(saved);
+    }
+    loadFromStorage();
+
+    // Export log to CSV
+    document.getElementById("exportBtn").addEventListener("click", () => {
+      if (checkInLog.length === 0) return alert("No check-ins yet.");
+      let csv = "Timestamp,Main Registrant,Member Email,Package\n";
+      checkInLog.forEach(r => 
+        csv += `"${r.time}","${r.mainRegistrant}","${r.memberEmail}","${r.package}"\n`
+      );
+      const blob = new Blob([csv], { type: "text/csv" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "Check-In_Log.csv";
+      link.click();
+    });
+  </script>
+</body>
+</html>
